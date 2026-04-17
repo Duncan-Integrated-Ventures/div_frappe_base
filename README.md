@@ -1,6 +1,17 @@
 ### DIV Frappe Base
 
-Extensions and utilities for Frappe
+Extensions and utilities for Frappe.
+
+### Features
+
+#### Utilities
+
+- `get_total_stock_quantity(item_code, inventory_dimensions=None)` — total actual qty across all warehouses from SLE, with optional inventory dimension filters.
+- `get_child_list(doctype, parent, fields, pluck)` — whitelisted helper to fetch child table rows.
+- `group_insert(docs, commit_each=False)` — batch-insert a list of documents.
+- `get_item_variant(item_name=None, item=None)` — loads an Item variant with its template's attributes parsed into `item._attributes`.
+
+**Note:** Inventory dimension setup (`setup_inventory_dimensions`) and carry-forward propagation (`propagate_inventory_dimensions`) have been moved to [BEAM](https://github.com/agritheory/beam) as of 2026-04-17. Apps should import from `beam.beam.inventory_dimension`.
 
 ### Installation
 
