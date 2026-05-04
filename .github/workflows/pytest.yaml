@@ -9,19 +9,14 @@ on:
       - version-15
   workflow_dispatch:
     inputs:
-      user:
-        description: "Frappe Framework repository user (add your username for forks)"
-        required: true
-        default: "frappe"
-        type: string
-      branch:
-        description: "Frappe Framework branch"
-        default: "version-15"
+      site_config:
+        description: "Site Configuration doc name to pull app versions from"
+        default: "npxldev.myerp.host"
         required: false
         type: string
 
 # concurrency:
-#   group: develop-cloud_storage-${{ github.event.number }}
+#   group: develop-div_frappe_base-${{ github.event.number }}
 #   cancel-in-progress: true
 
 jobs:
@@ -54,9 +49,9 @@ jobs:
       - name: Check for valid Python & Merge Conflicts
         run: |
           python -m compileall -f "${GITHUB_WORKSPACE}"
-          if grep -lr --exclude-dir=node_modules "^<<<<<<< " "${GITHUB_WORKSPACE}"
-              then echo "Found merge conflicts"
-              exit 1
+          if grep -lr --exclude-dir=node_modules "^<<<<<<< " "${GITHUB_WORKSPACE}"; then
+            echo "Found merge conflicts"
+            exit 1
           fi
 
       - name: Setup Node
@@ -91,9 +86,10 @@ jobs:
 
       - name: Get yarn cache directory path
         id: yarn-cache-dir-path
-        run: echo "::set-output name=dir::$(yarn cache dir)"
+        run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v4
+      - name: Cache yarn
+        uses: actions/cache@v4
         id: yarn-cache
         with:
           path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
@@ -101,24 +97,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-yarn-
 
-      - name: Install Bench Site and Apps
-        run: |
-          bash ${GITHUB_WORKSPACE}/.github/workflows/helper/install.sh
-        env:
-          SITES: 1
-          DB: mariadb
-          TYPE: server
-          APP_UNDER_TEST: "div_frappe_base"
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      # Generate a short-lived installation token from the GitHub App.
+      # BOT_APP_ID is stored as a repo/org variable; BOT_APP_PRIVATE_KEY as a secret.
+      # The token is scoped to only the repos the App is installed on (private deps).
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          # Limit token scope to the org that owns the private repos.
+          owner: npxladmin
 
-      - name: Setup Test Site and Fixtures
-        run: |
-          cd ~/frappe-bench
-          source env/bin/activate
-          python apps/frappe_devutils/frappe_devutils/tests/setup.py --site-number 1 --skip-switch
+      - name: Install Bench, Apps, and Setup Site
+        run: bash ${GITHUB_WORKSPACE}/.github/workflows/helper/install.sh
+        env:
+          DB: mariadb
+          APP_UNDER_TEST: "div_frappe_base"
+          SITE_CONFIG: ${{ inputs.site_config || 'npxldev.myerp.host' }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          FRAPPE_API_KEY: ${{ secrets.FRAPPE_API_KEY }}
+          FRAPPE_API_SECRET: ${{ secrets.FRAPPE_API_SECRET }}
 
       - name: Run Tests
         run: |
           cd ~/frappe-bench
           source env/bin/activate
-          pytest apps/frappe_devutils --disable-warnings -s
+          pytest apps/frappe_devutils --disable-warnings -s --site test_site

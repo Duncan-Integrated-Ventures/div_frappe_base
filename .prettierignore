@@ -12,8 +12,8 @@ locale
 *.egg-info
 dist/
 # build/
-cloud_storage/docs/current
-cloud_storage/public/dist
+div_frappe_base/docs/current
+div_frappe_base/public/dist
 .vscode
 .vs
 node_modules

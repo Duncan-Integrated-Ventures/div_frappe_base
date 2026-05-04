@@ -1,3 +1,6 @@
+# Copyright (c) 2026, Duncan Integrated Ventures LLC and contributors
+# For license information, please see license.txt
+
 app_name = "div_frappe_base"
 app_title = "DIV Frappe Base"
 app_publisher = "Duncan Integrated Ventures LLC"
@@ -26,7 +29,9 @@ app_license = "mit"
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/div_frappe_base/css/div_frappe_base.css"
-# app_include_js = "/assets/div_frappe_base/js/div_frappe_base.js"
+# uom_family.js exposes div_frappe_base.show_uom_family_dialog used by both
+# the UOM list-view button and the Canonical Attribute form button.
+app_include_js = ["/assets/div_frappe_base/js/uom_family.js"]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/div_frappe_base/css/div_frappe_base.css"
@@ -43,8 +48,11 @@ app_license = "mit"
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
+# doctype_js = {
+# }
+doctype_list_js = {
+	"UOM": "public/js/uom_list.js",
+}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
@@ -86,7 +94,7 @@ app_license = "mit"
 # ------------
 
 # before_install = "div_frappe_base.install.before_install"
-# after_install = "div_frappe_base.install.after_install"
+after_install = "div_frappe_base.install.after_install"
 
 # Uninstallation
 # ------------
@@ -249,4 +257,3 @@ app_license = "mit"
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

@@ -6,48 +6,43 @@ install_wkhtmltopdf() {
 	sudo apt install /tmp/wkhtmltox.deb
 }
 
-init_frappe() {
-	local branch
-	while read -r branch; do
-		git clone "https://github.com/frappe/frappe" --branch "$branch" --depth 1
-		bench init --skip-assets --frappe-path ~/frappe --python "$(which python)" frappe-bench
-	done
-}
-
-get_app() {
-	local line
-	# getting app works for --branch tag or branch, but not hash; need to get app at tag then pull fetch and checkout hash if we switch to apps.json
-	while read -r line; do
-		local app url git
-		read -r app url git <<< "$line"
-		echo "Installing $app with branch $git from $url"
-		if [[ "$url" == *"client-url"* ]]; then
-			repo_path="${url#https://github.com/}"
-			auth_url="https://${BOT_TOKEN}@github.com/${repo_path}"
-			bench get-app "$app" "$auth_url" --branch "$git" --skip-assets
-		else
-			bench get-app "$app" "$url" --branch "$git" --skip-assets
-		fi
-	done
-}
-
 cd ~ || exit
+
 sudo apt update
 sudo apt remove mysql-server mysql-client
 sudo apt install -y libcups2-dev redis-server mariadb-client cron supervisor
-sudo apt install -y unixodbc-dev build-essential gcc libc-dev libdmtx0t64 # For pyodbc, python dependencies
+sudo apt install -y unixodbc-dev build-essential gcc libc-dev libdmtx0t64
 
-if [ "$DB" == "mariadb" ];then
+if [ "$DB" == "mariadb" ]; then
 	mariadb --host 127.0.0.1 --port 3306 -u root -p123 -e "SET GLOBAL character_set_server = 'utf8mb4'"
 	mariadb --host 127.0.0.1 --port 3306 -u root -p123 -e "SET GLOBAL collation_server = 'utf8mb4_unicode_ci'"
 fi
 
 pip install frappe-bench
 
-git clone "https://${BOT_TOKEN}@github.com/npxladmin/frappe_devutils" --branch version-15
-cp frappe_devutils/frappe_devutils/tests/app_versions.json ~/app_versions.json
+# Clone frappe_devutils to bootstrap: we need its scripts/setup.py helpers to
+# resolve the frappe branch from the Site Configuration, and we need the app
+# itself present so bench auto-discovers its custom commands (list-configs,
+# setup-apps, new-site-from-config, import-fixtures) once it's installed.
+git clone "https://${GITHUB_TOKEN}@github.com/npxladmin/frappe_devutils" \
+	--branch develop ~/frappe_devutils
 
-jq -r '.frappe.git' app_versions.json | init_frappe
+# Resolve the frappe branch from the Site Configuration so bench init uses the right version.
+FRAPPE_BRANCH=$(python3 - <<EOF
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/frappe_devutils"))
+from frappe_devutils.scripts.setup import FrappeClient, app_folder
+doc = FrappeClient().get_site_configuration("${SITE_CONFIG}")
+for r in doc["application_records"]:
+    if app_folder(r) == "frappe":
+        print(r.get("git_branch", "version-15"))
+        sys.exit(0)
+print("version-15")
+EOF
+)
+
+git clone "https://github.com/frappe/frappe" --branch "$FRAPPE_BRANCH" --depth 1 ~/frappe
+bench init --skip-assets --frappe-path ~/frappe --python "$(which python)" frappe-bench
 
 cd frappe-bench || exit
 echo "Changed directory to frappe-bench"
@@ -58,19 +53,36 @@ sed -i 's/watch:/# watch:/g' Procfile
 sed -i 's/schedule:/# schedule:/g' Procfile
 sed -i 's/socketio:/# socketio:/g' Procfile
 sed -i 's/redis_socketio:/# redis_socketio:/g' Procfile
-echo "Configured redis ports"
+echo "Configured Procfile"
 
 install_wkhtmltopdf & wkpid=$!
 
-jq -r --arg app "$APP_UNDER_TEST" 'to_entries[] | select(.key != "frappe" and .key != $app) | .key + " " + .value.url + " " + .value.git' ~/app_versions.json | get_app
-bench get-app "$APP_UNDER_TEST" "$GITHUB_WORKSPACE" --skip-assets
-if [ "${APP_UNDER_TEST}" != "frappe_devutils" ]; then
-	bench get-app frappe_devutils ~/frappe_devutils --skip-assets
+# frappe_devutils has to be installed into bench BEFORE `bench setup-apps` can
+# run (bench only discovers custom commands from installed apps). When the PR
+# under test is frappe_devutils itself, install it from GITHUB_WORKSPACE so the
+# PR's code is what runs; otherwise install from the bootstrap clone.
+if [ "${APP_UNDER_TEST}" = "frappe_devutils" ]; then
+	bench get-app --skip-assets frappe_devutils "${GITHUB_WORKSPACE}"
+else
+	bench get-app --skip-assets frappe_devutils ~/frappe_devutils
 fi
 
-bench setup requirements --python --dev
+# Fetch/update every app in the Site Configuration. `--local-app` points the
+# app under test at GITHUB_WORKSPACE so the PR's code is what gets installed.
+# `--test` passes --skip-assets to every `bench get-app`.
+bench setup-apps \
+	--config "${SITE_CONFIG}" \
+	--test \
+	--local-app "${APP_UNDER_TEST}:${GITHUB_WORKSPACE}"
+
+# Create the test site and import fixtures.
+bench new-site-from-config \
+	--config "${SITE_CONFIG}" \
+	--site-name test_site \
+	--import-fixtures
 
 wait $wkpid
-echo "Bench dependency setup and wkhtmltox installation complete"
+echo "Wkhtmltox installation, bench, apps, and site setup complete"
 
-bench start &>> ~/frappe-bench/bench_start.log & echo "Bench started"
+bench start &>> ~/frappe-bench/bench_start.log &
+echo "Bench started"

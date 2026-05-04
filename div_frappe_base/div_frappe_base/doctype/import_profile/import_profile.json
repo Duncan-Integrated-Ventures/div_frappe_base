@@ -1,0 +1,133 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:profile_name",
+ "creation": "2026-04-25 00:00:32.026088",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "profile_name",
+  "column_break_mckm",
+  "target_doctype",
+  "target_child_table_field",
+  "section_break_knpx",
+  "header_row_index",
+  "column_break_tfux",
+  "trailing_rows_to_skip",
+  "column_break_sheet",
+  "sheet_name",
+  "section_break_haqp",
+  "scope_filters",
+  "column_mappings"
+ ],
+ "fields": [
+  {
+   "fieldname": "profile_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Profile Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "target_doctype",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Target DocType",
+   "options": "DocType",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "target_child_table_field",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Target Child Table Field",
+   "reqd": 1
+  },
+  {
+   "fieldname": "header_row_index",
+   "fieldtype": "Int",
+   "label": "Header Row Index",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "trailing_rows_to_skip",
+   "fieldtype": "Int",
+   "label": "Trailing Rows to Skip",
+   "non_negative": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_sheet",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Worksheet name (xlsx/xls only). Blank = auto-detect the sheet with the most non-empty rows.",
+   "fieldname": "sheet_name",
+   "fieldtype": "Data",
+   "label": "Sheet Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "scope_filters",
+   "fieldtype": "Table",
+   "label": "Scope Filters",
+   "options": "Import Profile Scope",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_mappings",
+   "fieldtype": "Table",
+   "label": "Column Mappings",
+   "options": "Import Profile Column",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_mckm",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_knpx",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_tfux",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_haqp",
+   "fieldtype": "Section Break"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-25 00:57:22.881121",
+ "modified_by": "Administrator",
+ "module": "DIV Frappe Base",
+ "name": "Import Profile",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
