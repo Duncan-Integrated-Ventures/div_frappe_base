@@ -105,7 +105,9 @@ def alias_cache() -> dict[str, str | None]:
 # ---------------------------------------------------------------------------
 
 
-def convert_to_canonical(value: float, source_uom: str, canonical_uom: str) -> float:
+def convert_to_canonical(
+	value: float, source_uom: str, canonical_uom: str, *, allow_non_decimal: bool = False
+) -> float:
 	"""Convert `value` from `source_uom` to `canonical_uom` by walking the
 	UOM Conversion Factor graph transitively.
 
@@ -114,6 +116,13 @@ def convert_to_canonical(value: float, source_uom: str, canonical_uom: str) -> f
 	miss that and return the raw value. reachable_uoms BFS-accumulates the
 	chain in either direction, so we just look the source up in the
 	canonical's reachable set.
+
+	By default the BFS is restricted to power-of-10 factors so it doesn't
+	jump across physical dimensions via Frappe's stock cross-dimension
+	factors (e.g. Hz ↔ Wavelength In Kilometres at 299792458). Pass
+	`allow_non_decimal=True` to traverse non-power-of-10 edges too — needed
+	for conversions like Inch ↔ Millimeter (25.4) that are within a single
+	dimension but not metric-prefixed.
 
 	Returns the raw value when source and canonical are the same, or when no
 	path connects them (logs a 'missing UOM conversion' warning so the row
@@ -124,7 +133,7 @@ def convert_to_canonical(value: float, source_uom: str, canonical_uom: str) -> f
 	# reachable_uoms(canonical) returns {uom: factor} where
 	# `value_in_uom = value_in_canonical * factor`. Inverting that gives
 	# `value_in_canonical = value_in_source / factor[source]`.
-	factors = reachable_uoms(canonical_uom)
+	factors = reachable_uoms(canonical_uom, allow_non_decimal=allow_non_decimal)
 	source_factor = factors.get(source_uom)
 	if source_factor:
 		return float(value) / float(source_factor)
@@ -187,19 +196,24 @@ def display_score(v: float, *, integer: bool) -> tuple[float, int, float]:
 	return (precision_loss, len(s), abs(v))
 
 
-def reachable_uoms(base_uom: str) -> dict[str, float]:
+def reachable_uoms(
+	base_uom: str, *, allow_non_decimal: bool = False
+) -> dict[str, float]:
 	"""BFS from `base_uom` over UOM Conversion Factor (both directions).
 	Returns {uom: factor_to_multiply_base_value_by_to_get_value_in_uom}.
 
 	Per the convention `1 from_uom = value to_uom`,
 	`value_in_to_uom = value_in_from_uom * value`.
 
-	Only follows decimal-prefix factors (≈10ⁿ) so the picker doesn't jump
-	across physical dimensions via Frappe's stock cross-dimension factors
-	(e.g. Hz ↔ Wavelength In Kilometres at 299792458)."""
+	By default only decimal-prefix factors (≈10ⁿ) are followed so the picker
+	doesn't jump across physical dimensions via Frappe's stock cross-dimension
+	factors (e.g. Hz ↔ Wavelength In Kilometres at 299792458). Pass
+	`allow_non_decimal=True` to also traverse non-power-of-10 edges — needed
+	for within-dimension conversions like Inch ↔ Millimeter (25.4)."""
 	cache = reachable_cache()
-	if base_uom in cache:
-		return cache[base_uom]
+	cache_key = (base_uom, allow_non_decimal)
+	if cache_key in cache:
+		return cache[cache_key]
 	seen = {base_uom: 1.0}
 	queue = [base_uom]
 	while queue:
@@ -209,7 +223,11 @@ def reachable_uoms(base_uom: str) -> dict[str, float]:
 			filters={"from_uom": current},
 			fields=["to_uom", "value"],
 		):
-			if f.to_uom not in seen and f.value and is_decimal_factor(float(f.value)):
+			if (
+				f.to_uom not in seen
+				and f.value
+				and (allow_non_decimal or is_decimal_factor(float(f.value)))
+			):
 				seen[f.to_uom] = seen[current] * float(f.value)
 				queue.append(f.to_uom)
 		for f in frappe.get_all(
@@ -217,10 +235,14 @@ def reachable_uoms(base_uom: str) -> dict[str, float]:
 			filters={"to_uom": current},
 			fields=["from_uom", "value"],
 		):
-			if f.from_uom not in seen and f.value and is_decimal_factor(float(f.value)):
+			if (
+				f.from_uom not in seen
+				and f.value
+				and (allow_non_decimal or is_decimal_factor(float(f.value)))
+			):
 				seen[f.from_uom] = seen[current] / float(f.value)
 				queue.append(f.from_uom)
-	cache[base_uom] = seen
+	cache[cache_key] = seen
 	return seen
 
 

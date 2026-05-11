@@ -9,6 +9,11 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
+    # Provider-agnostic LLM client used by div_frappe_base.ai.client. Routes
+    # AI Settings → AI Profile rows to ~100 model providers (Gemini, Claude,
+    # OpenAI, xAI, Bedrock, Vertex, Ollama, etc.) under a single OpenAI-shaped
+    # call interface.
+    "litellm",
 ]
 
 [build-system]

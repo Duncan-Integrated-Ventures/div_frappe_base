@@ -31,7 +31,13 @@ app_license = "mit"
 # app_include_css = "/assets/div_frappe_base/css/div_frappe_base.css"
 # uom_family.js exposes div_frappe_base.show_uom_family_dialog used by both
 # the UOM list-view button and the Canonical Attribute form button.
-app_include_js = ["/assets/div_frappe_base/js/uom_family.js"]
+# pricing_rule_patches.js mirrors div_frappe_base.monkey_patches on the JS
+# side (row-pass-through + per-line-charge folding).
+app_include_js = [
+	"/assets/div_frappe_base/js/uom_family.js",
+	"/assets/div_frappe_base/js/pricing_rule_patches.js",
+	"/assets/div_frappe_base/js/geolocation_patches.js",
+]
 
 # include js, css files in header of web template
 # web_include_css = "/assets/div_frappe_base/css/div_frappe_base.css"
@@ -140,13 +146,15 @@ after_install = "div_frappe_base.install.after_install"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Asset Movement": {
+		"on_submit": "div_frappe_base.asset_location_link.reparent_linked_locations",
+		"on_cancel": "div_frappe_base.asset_location_link.reparent_linked_locations",
+	},
+	"Location": {
+		"validate": "div_frappe_base.asset_location_link.validate_linked_location_parent_change",
+	},
+}
 
 # Scheduled Tasks
 # ---------------

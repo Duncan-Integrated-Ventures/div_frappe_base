@@ -1,6 +1,9 @@
 # Copyright (c) 2026, Duncan Integrated Ventures LLC and contributors
 # For license information, please see license.txt
 
-__version__ = "0.0.1"
+# import frappe
+from frappe.model.document import Document
 
-from div_frappe_base import monkey_patches  # noqa: F401
+
+class AISettings(Document):
+	pass

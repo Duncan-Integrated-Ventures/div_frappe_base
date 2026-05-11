@@ -5,10 +5,45 @@
 
 import frappe
 
+AI_PROFILE_SEEDS = [
+	{"profile_name": "vision", "timeout": 60},
+	{"profile_name": "categorizer", "timeout": 60},
+	{"profile_name": "datasheet", "timeout": 120},
+]
+
 
 def after_install():
 	make_uom_alias_case_sensitive()
 	make_uom_symbol_case_sensitive()
+	seed_ai_profiles()
+
+
+def seed_ai_profiles():
+	"""Ensure the three default AI Profile rows exist on AI Settings.
+
+	Idempotent — checks for an existing row by profile_name before appending,
+	and never overwrites an operator-configured row. Safe to invoke from
+	`bench execute` if an operator wants to re-seed missing rows on an
+	existing bench."""
+	settings = frappe.get_single("AI Settings")
+	existing = {row.profile_name for row in settings.profiles}
+	added = False
+	for seed in AI_PROFILE_SEEDS:
+		if seed["profile_name"] in existing:
+			continue
+		settings.append(
+			"profiles",
+			{
+				"profile_name": seed["profile_name"],
+				"provider": "Gemini",
+				"model": "gemini-2.5-flash",
+				"temperature": 0.1,
+				"timeout": seed["timeout"],
+			},
+		)
+		added = True
+	if added:
+		settings.save(ignore_permissions=True)
 
 
 def make_uom_symbol_case_sensitive():
