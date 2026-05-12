@@ -156,6 +156,16 @@ doc_events = {
 	},
 }
 
+# Background Workers
+# ------------------
+# The `embed` queue is served by a single dedicated RQ worker that keeps the
+# sentence-transformer model resident across jobs. Every other gunicorn /
+# scheduler / RQ process stays lean. Pin `num_workers` to 1 in
+# common_site_config.json (`workers.embed.num_workers = 1`); more than one
+# process would defeat the single-model-load purpose.
+# See `docs/design.md` § Vector Search Infrastructure.
+worker_queues = ["short", "default", "long", "embed"]
+
 # Scheduled Tasks
 # ---------------
 
