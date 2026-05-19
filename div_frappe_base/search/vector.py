@@ -74,6 +74,15 @@ def embed_text(text: str):
 	return embed_texts([text])[0]
 
 
+def format_vector_text(vec) -> str:
+	"""Render a sequence of floats as a `[v1, v2, ...]` text literal suitable
+	for `VEC_FromText(...)`. MariaDB 11.8 rejects raw float32 byte payloads
+	bound through MySQLdb's parameter substitution into a `VECTOR(N)` column;
+	the text form is the dialect-safe path. Accepts numpy arrays or plain
+	Python lists."""
+	return "[" + ",".join(repr(float(x)) for x in vec) + "]"
+
+
 def pack_vector(vec) -> bytes:
 	"""Pack a sequence of floats as little-endian float32 bytes — the binary
 	form MariaDB's `VEC_*` functions accept. Accepts numpy arrays or plain
@@ -84,11 +93,14 @@ def pack_vector(vec) -> bytes:
 
 def write_embedding(doctype: str, name: str, field: str, vec) -> None:
 	"""Persist an embedding via raw UPDATE. Skips the ORM entirely so the
-	unmodelled BLOB column doesn't trip Frappe's diff machinery."""
-	payload = pack_vector(vec)
+	unmodelled VECTOR column doesn't trip Frappe's diff machinery. Uses
+	`VEC_FromText(...)` rather than a raw bytes parameter because MariaDB
+	11.8 rejects float32 byte payloads passed through MySQLdb's `%s`
+	substitution to a `VECTOR(N)` column with "Incorrect vector value"."""
+	text = format_vector_text(vec)
 	frappe.db.sql(
-		f"UPDATE `tab{doctype}` SET `{field}` = %s WHERE name = %s",
-		(payload, name),
+		f"UPDATE `tab{doctype}` SET `{field}` = VEC_FromText(%s) WHERE name = %s",
+		(text, name),
 	)
 
 
@@ -108,7 +120,11 @@ def mariadb_supports_vectors() -> bool:
 	return parts >= MIN_MARIADB_VECTOR_VERSION
 
 
-def column_is_blob(doctype: str, field: str) -> bool:
+def column_is_vector_ready(doctype: str, field: str) -> bool:
+	"""True when the column is already in a shape that `VEC_FromText` writes
+	and `VEC_DISTANCE_COSINE` reads — either MariaDB-native `VECTOR(N)` or
+	one of the BLOB family the older patch produced. Used to keep
+	`upgrade_column_to_vector` idempotent across re-runs."""
 	row = frappe.db.sql(
 		"""
 		SELECT DATA_TYPE
@@ -130,7 +146,32 @@ def column_is_blob(doctype: str, field: str) -> bool:
 	}
 
 
+def column_is_native_vector(doctype: str, field: str) -> bool:
+	row = frappe.db.sql(
+		"""
+		SELECT DATA_TYPE
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE()
+			AND TABLE_NAME = %s
+			AND COLUMN_NAME = %s
+		""",
+		(f"tab{doctype}", field),
+	)
+	if not row:
+		return False
+	return (row[0][0] or "").lower() == "vector"
+
+
+# Back-compat alias: existing callers (and tests) imported `column_is_blob`
+# from this module; keep the old name pointing at the new function.
+column_is_blob = column_is_vector_ready
+
+
 def vector_index_exists(doctype: str, field: str) -> bool:
+	# `%VECTOR%` is escaped to `%%VECTOR%%` because frappe.db.sql forwards the
+	# query through MySQLdb's printf-style `%` substitution when args are
+	# present; an unescaped `%V` raises "not enough arguments for format
+	# string" before the query ever reaches the server.
 	row = frappe.db.sql(
 		"""
 		SELECT INDEX_NAME
@@ -138,7 +179,7 @@ def vector_index_exists(doctype: str, field: str) -> bool:
 		WHERE TABLE_SCHEMA = DATABASE()
 			AND TABLE_NAME = %s
 			AND COLUMN_NAME = %s
-			AND INDEX_TYPE LIKE '%VECTOR%'
+			AND INDEX_TYPE LIKE '%%VECTOR%%'
 		""",
 		(f"tab{doctype}", field),
 	)
@@ -148,30 +189,44 @@ def vector_index_exists(doctype: str, field: str) -> bool:
 def upgrade_column_to_vector(
 	doctype: str, field: str, dim: int, distance: str = "cosine"
 ) -> bool:
-	"""Migrate a Long Text column to a MariaDB-native vector BLOB + HNSW index.
+	"""Migrate a Long Text column to a MariaDB-native `VECTOR(dim)` column.
 
 	Returns True when the column ends up in the vector-ready state, False
 	when the server is too old (caller is expected to fall through to a
-	non-vector match path). Idempotent."""
+	non-vector match path). Idempotent — re-running on an already-converted
+	column is a no-op.
+
+	**HNSW index is intentionally not created here.** MariaDB 11.7+ requires
+	`NOT NULL` on every column in a `VECTOR INDEX`, but Frappe's ORM writes
+	`NULL` into the field on `doc.insert()` because the doctype JSON
+	declares it as Long Text (with no default). Adding the index would
+	require either backfilling and gating every insert path with a
+	zero-vector default or moving rows to raw-SQL inserts — both larger
+	refactors than this patch can carry. Without the index, `search_cosine`
+	falls back to a full-scan `VEC_DISTANCE_COSINE`, which is fine at
+	current corpus sizes (≈ 6 k rows) but should be revisited if the
+	corpus grows materially or the matcher becomes hot."""
 	if not mariadb_supports_vectors():
 		frappe.log_error(
 			title="Vector column upgrade skipped",
 			message=(
-				f"MariaDB version does not support VECTOR INDEX; column `tab{doctype}`.{field} left as text."
+				f"MariaDB version does not support VECTOR columns; "
+				f"`tab{doctype}`.{field} left as text."
 			),
 		)
 		return False
 
-	if not column_is_blob(doctype, field):
-		frappe.db.sql(f"ALTER TABLE `tab{doctype}` MODIFY COLUMN `{field}` BLOB NULL")
+	if column_is_native_vector(doctype, field):
+		return True
 
-	if not vector_index_exists(doctype, field):
-		index_name = f"{field}_vec_idx"
-		# MariaDB 11.7+ VECTOR INDEX syntax. Caller chose `dim`; the column
-		# itself is plain BLOB so dim is enforced at the index, not the type.
-		frappe.db.sql(
-			f"ALTER TABLE `tab{doctype}` ADD VECTOR INDEX `{index_name}` (`{field}`) M=16 DISTANCE={distance}"
-		)
+	# An earlier patch revision may have already converted the column to
+	# BLOB. Either way, MODIFY straight to VECTOR(dim) is safe: VECTOR
+	# accepts the existing payload bytes back via VEC_FromText writes, and
+	# there's no in-flight float32 data on `dim`-mismatched rows on this
+	# bench (sync hasn't successfully populated the column yet).
+	frappe.db.sql(
+		f"ALTER TABLE `tab{doctype}` MODIFY COLUMN `{field}` VECTOR({int(dim)}) NULL"
+	)
 	return True
 
 
@@ -210,20 +265,27 @@ def search_cosine(
 ) -> list[dict]:
 	"""Rank a doctype's rows by cosine distance to `query`.
 
-	Emits a raw SELECT that uses MariaDB's `VEC_DISTANCE_COSINE`; the HNSW
-	index on `field` (added by `upgrade_column_to_vector`) is the ANN driver.
+	Emits a raw SELECT that uses MariaDB's `VEC_DISTANCE_COSINE`. The HNSW
+	index on `field` is the intended ANN driver when present; the SELECT
+	still works without it (full scan) so columns that haven't been indexed
+	yet — see `upgrade_column_to_vector` for why — degrade gracefully.
 	Returns rows of `{name, dist, cosine}` where `cosine = 1 - dist`. The
-	caller chooses the acceptance threshold."""
-	payload = pack_vector(query)
+	caller chooses the acceptance threshold.
+
+	`VEC_FromText(...)` is used rather than a raw bytes parameter because
+	MariaDB 11.8 rejects float32 byte payloads bound via MySQLdb's `%s`
+	substitution to a `VECTOR(N)` column."""
+	text = format_vector_text(query)
 	where_sql, where_params = compose_where(filters)
 	where_clause = f"WHERE {where_sql}" if where_sql else ""
 	sql = (
-		f"SELECT name, VEC_DISTANCE_COSINE(`{field}`, %s) AS dist "
+		f"SELECT name, VEC_DISTANCE_COSINE(`{field}`, VEC_FromText(%s)) AS dist "
 		f"FROM `tab{doctype}` "
-		f"{where_clause} "
+		f"WHERE `{field}` IS NOT NULL "
+		f"{('AND ' + where_sql) if where_sql else ''} "
 		f"ORDER BY dist ASC LIMIT %s"
 	)
-	params = [payload, *where_params, int(limit)]
+	params = [text, *where_params, int(limit)]
 	rows = frappe.db.sql(sql, params, as_dict=True)
 	for row in rows:
 		row["cosine"] = 1.0 - float(row["dist"])

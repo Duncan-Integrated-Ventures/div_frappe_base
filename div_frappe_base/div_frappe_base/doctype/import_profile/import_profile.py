@@ -4,6 +4,7 @@
 import csv
 import json
 import os
+import re
 
 from openpyxl import load_workbook
 
@@ -153,6 +154,36 @@ def slice_txt_row(line, col_offsets):
 	return values
 
 
+def merge_multiword_header_tokens(header_tokens):
+	"""Merge consecutive header tokens that form a single multi-word label.
+
+	A fixed-width header like `Mid X         Mid Y         Ref X` would otherwise
+	parse as eight tokens (Mid, X, Mid, Y, Ref, X, ...). The rule applied here:
+	merge a token into the previous column only when (a) it sits exactly one
+	space after the previous token and (b) it's a single character. That matches
+	the X/Y coordinate-suffix convention used by Pick & Place files without
+	touching headers like `Designator Footprint` or `Rotation Comment` (the
+	second token isn't single-char) or `Pad Y TB` (TB is two chars).
+	"""
+	merged = []
+	i = 0
+	while i < len(header_tokens):
+		name, start = header_tokens[i]
+		end = start + len(name)
+		j = i + 1
+		while j < len(header_tokens):
+			next_name, next_start = header_tokens[j]
+			if next_start - end == 1 and len(next_name) == 1:
+				name = f"{name} {next_name}"
+				end = next_start + len(next_name)
+				j += 1
+			else:
+				break
+		merged.append((name, start))
+		i = j
+	return merged
+
+
 def read_txt_file(file_path):
 	with open(file_path, encoding="utf-8-sig") as f:
 		return [line.rstrip("\r\n") for line in f.readlines()]
@@ -199,6 +230,7 @@ def extract_columns_and_data(rows, header_row_index, kind):
 		# column structure so each field gets its own column. Header tokens
 		# still supply names where their start offset falls within a column.
 		col_offsets = header_tokens
+		use_token_slicing = False
 		first_data = next(
 			(line for line in rows[header_row_index + 1 :] if line and line.strip()),
 			None,
@@ -220,13 +252,38 @@ def extract_columns_and_data(rows, header_row_index, kind):
 							break
 					resolved.append((name or f"Column_{i}", start))
 				col_offsets = resolved
+			elif len(data_tokens) < len(header_tokens):
+				# Header has multi-word labels (e.g. `Mid X`, `Pad Y`) that
+				# over-split on whitespace. Merge X/Y-style continuations into
+				# their parent column. When the merge changes the column count,
+				# switch to token-based row slicing: position-based slicing at
+				# header offsets mis-cuts rows whose data overflows a column
+				# (e.g. an unusually long Footprint pushing values rightward).
+				merged = merge_multiword_header_tokens(header_tokens)
+				if len(merged) < len(header_tokens):
+					col_offsets = merged
+					use_token_slicing = True
 		columns = [name for name, _ in col_offsets]
 		data_rows = []
-		for line in rows[header_row_index + 1 :]:
-			if not line.strip():
-				data_rows.append(None)
-				continue
-			data_rows.append(slice_txt_row(line, col_offsets))
+		if use_token_slicing:
+			n = len(columns)
+			for line in rows[header_row_index + 1 :]:
+				if not line.strip():
+					data_rows.append(None)
+					continue
+				row_tokens = [tok for tok, _ in get_txt_col_offsets(line)]
+				if len(row_tokens) <= n:
+					data_rows.append(row_tokens + [""] * (n - len(row_tokens)))
+				else:
+					# Last column absorbs trailing tokens so a Comment value
+					# like `R TAIL` stays whole instead of getting truncated.
+					data_rows.append(row_tokens[: n - 1] + [" ".join(row_tokens[n - 1 :])])
+		else:
+			for line in rows[header_row_index + 1 :]:
+				if not line.strip():
+					data_rows.append(None)
+					continue
+				data_rows.append(slice_txt_row(line, col_offsets))
 		return columns, data_rows
 
 	header_row = rows[header_row_index]
@@ -612,6 +669,19 @@ def apply_value_map(raw_value, value_map_json, fieldtype, options):
 	return raw_value
 
 
+NUMERIC_PREFIX_RE = re.compile(r"^\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
+
+
+def extract_numeric_prefix(value):
+	"""Pull the leading numeric portion out of a string that has a trailing
+	unit / currency / annotation suffix. Returns None if the string has no
+	numeric prefix at all. Used by Float/Int/Currency/Percent coercion so
+	cells like "5102.499mil", "1234.5 mm", or "$50" still land as numbers
+	in target Float fields instead of falling through as raw strings."""
+	m = NUMERIC_PREFIX_RE.match(value)
+	return m.group(1) if m else None
+
+
 def coerce_to_fieldtype(value, fieldtype):
 	"""Cast a string cell value to the target field's native Python type so the
 	parent doctype's `validate` (which often does numeric comparisons like
@@ -624,11 +694,23 @@ def coerce_to_fieldtype(value, fieldtype):
 		try:
 			return int(float(value))
 		except (TypeError, ValueError):
+			prefix = extract_numeric_prefix(value)
+			if prefix is not None:
+				try:
+					return int(float(prefix))
+				except (TypeError, ValueError):
+					pass
 			return value
 	if fieldtype in ("Float", "Currency", "Percent"):
 		try:
 			return float(value)
 		except (TypeError, ValueError):
+			prefix = extract_numeric_prefix(value)
+			if prefix is not None:
+				try:
+					return float(prefix)
+				except (TypeError, ValueError):
+					pass
 			return value
 	if fieldtype == "Check":
 		s = value.strip().lower()

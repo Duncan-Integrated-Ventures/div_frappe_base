@@ -396,7 +396,7 @@ No new fields. A property setter clears `Item.variants_section.depends_on` (`syn
 Adds `Asset.linked_location` (Link → Location, unique). When the field is set, the Asset *is* that Location — its tree position is owned by the Asset's `location`, not by direct edits on the Location form. An `Asset Movement → on_submit / on_cancel` hook re-parents each row's linked Location to track the moved Asset's new `location`. A `Location → validate` hook refuses direct `parent_location` edits while a linked Asset exists, telling the operator to use Asset Movement instead. Typical use: a machine Asset whose linked Location holds child Locations (slots, bays, racks) — moving the machine via Asset Movement carries every descendant with it.
 
 ### 2. Problem / why now
-Several downstream apps (e.g. `div_ems`'s PCBA Setup Feeder Plan) model machine internals as `Location` records under a per-machine container Location. Without this primitive, "moving a machine" requires either editing the container Location's parent directly (which silently desynchronises the machine Asset's recorded `location`) or generating per-child Asset Movement rows for every asset inside (which forces scan events for assets that haven't physically moved). Tying the Location's tree position to the Asset's `location` lets a single Asset Movement on the machine express the move and locks down the wrong-way path. The pattern is generic — any Asset that owns a Location can use it, so it lives in `div_frappe_base` rather than in any single domain app.
+Domain apps that model machine internals as `Location` records under a per-machine container Location run into a shape problem: "moving a machine" requires either editing the container Location's parent directly (which silently desynchronises the machine Asset's recorded `location`) or generating per-child Asset Movement rows for every asset inside (which forces scan events for assets that haven't physically moved). Tying the Location's tree position to the Asset's `location` lets a single Asset Movement on the machine express the move and locks down the wrong-way path. The pattern is generic — any Asset that owns a Location can use it, so it lives here rather than in any single domain app.
 
 ### 3. Target app
 App: `div_frappe_base`
@@ -454,7 +454,7 @@ No new permissions. Both hooks run under the saving user's session and inherit t
 A bench-wide `AI Settings` Single doctype plus a `div_frappe_base.ai.client` helper module that wraps [LiteLLM](https://docs.litellm.ai/) to give every higher-tier app one provider-agnostic surface for LLM calls. AI Settings holds a child table of named **AI Profile** rows (one per use-case — vision, categorizer, datasheet) where each row carries its own provider, model, API key, optional base URL, temperature, and timeout. The helper exposes `complete(profile_name, prompt, attachments=None, response_format=None)` that resolves the profile, caches the decrypted key on `frappe.cache()` (mirroring the legacy `gemini_client()` pattern), and dispatches through `litellm.completion(...)` so callers can swap a profile's provider from Gemini to Claude / xAI / OpenAI / Bedrock / Ollama / etc. without touching call sites.
 
 ### 2. Problem / why now
-The bench currently has three Gemini call sites (`div_ems/component_sourcing/categorizer.py`, `div_ems/placement_generation/ai_vision.py`, `div_ems/.../component_library.py`) that each instantiate `google.genai.Client` directly, hardcode `gemini-2.5-flash`, and read the same `EMS Settings.gemini_api_key` field. Three problems compound: (a) the model is uneditable without a code change, (b) switching providers means rewriting every call site, and (c) the `gemini_api_key` field lives in `div_ems`'s settings even though component-library AI parsing has nothing to do with EMS specifically — the configuration is misplaced one app up the stack. Centralizing the configuration in `div_frappe_base` (which all higher-tier apps depend on) and routing through LiteLLM (one library, ~100 providers) lets operators reconfigure model + provider in the UI and lets future apps reuse the same plumbing without re-deriving it.
+Higher-tier apps in the bench had several Gemini call sites that each instantiated `google.genai.Client` directly, hardcoded `gemini-2.5-flash`, and read a single shared API-key field on a domain Singles doctype. Three problems compound: (a) the model is uneditable without a code change, (b) switching providers means rewriting every call site, and (c) the API-key field lived one app up the stack from where it belongs, since AI parsing of generic things (datasheets, images) isn't a domain concern. Centralizing the configuration here (every higher-tier app depends on `div_frappe_base`) and routing through LiteLLM (one library, ~100 providers) lets operators reconfigure model + provider in the UI and lets future apps reuse the same plumbing without re-deriving it.
 
 ### 3. Target app
 App: `div_frappe_base`
@@ -468,7 +468,7 @@ Module: `DIV Frappe Base`
 4. **System (multimodal caller)** — `complete("vision", prompt, attachments=[{"mime_type": "image/jpeg", "data": image_bytes}], response_format="json")` base64-encodes each attachment, attaches it as an OpenAI-shaped content part (`{"type": "image_url", "image_url": {"url": data_uri}}` for images; `{"type": "file", "file": {"file_data": data_uri}}` for PDFs), and ships the whole list through `litellm.completion(model=f"{provider_prefix}/{model}", messages=..., temperature=..., timeout=..., api_key=..., api_base=base_url or None, response_format=...)`. Trigger: in-method.
 5. **System** — extracts `response.choices[0].message.content`, strips any leading/trailing markdown fences (mirroring the existing `categorizer.py` / `ai_vision.py` defensive parsing), and returns the string. Returns `None` (and logs once via `frappe.log_error`, gated by a 1-hour cache key like the existing `gemini_api_key_missing_logged` pattern) when the profile's API key is empty and the caller passed `raise_exception=False`. Trigger: in-method.
 6. **System (after_install)** — `div_frappe_base.install.after_install` ensures the three seeded profile rows exist on AI Settings, with `provider="Gemini"`, `model="gemini-2.5-flash"`, blank API keys, default temperature `0.1`, and default timeout (60s for vision/categorizer, 120s for datasheet, mirroring the legacy `http_options.timeout` values). Idempotent — re-running `after_install` doesn't duplicate or overwrite existing operator-configured rows. Trigger: install / migrate.
-7. **System (consumers)** — `div_ems/component_sourcing/categorizer.py:classify_one`, `div_ems/placement_generation/ai_vision.py:call_gemini_vision`, and `div_ems/.../component_library.py` (the datasheet-parsing path) drop their `genai.Client` construction and call `complete()` with the corresponding profile name. The legacy `gemini_client()` helper and the `from google import genai` imports are removed. Trigger: refactor (see § 6).
+7. **System (consumers)** — Existing AI call sites in higher-tier apps drop their `genai.Client` construction and call `complete()` with the corresponding profile name. Legacy provider-specific helpers and `from google import genai` imports are removed. Trigger: refactor (see § 6).
 
 ### 5. Schema
 
@@ -582,3 +582,114 @@ No new permissions. The patches run on the client under the operator's session. 
 - **Alternative geocoder providers.** Only Nominatim (the library's default) is wired up. Esri / Mapbox / Photon support is a configurable knob that hasn't been exposed.
 - **Marker placement on geocode.** The geocoder pans the map view but never writes to the field or drops a marker. Operators still draw their own shape after navigating.
 - **Replacing the bench-wide `Geolocation Settings.center`.** The override is per-control, applied at init time. The Geolocation Settings record is left at its default and stock callers that read it directly are unaffected.
+
+---
+
+## Vector Search Infrastructure
+
+### 1. Summary
+Shared helper module `div_frappe_base.search.vector` plus a dedicated single-process RQ queue (`embed`) that gives every higher-tier app one API surface for "embed text → store as MariaDB-native vector → cosine-rank". Wraps a CPU-local `sentence-transformers` model (`BAAI/bge-base-en-v1.5`, 768 dims, L2-normalised) so the bench is self-contained and there's no per-query API cost.
+
+### 2. Problem / why now
+Description-matching / package-similarity / semantic-search features all want the same primitives: a way to embed strings, a column type to store the vectors, and a single SQL function to rank. Without a shared helper each consumer either re-implements the model loading (and pays the ~600 MB resident cost in every process that touches it) or pushes the cost out to a paid API. Both are wrong defaults. Pulling the helper into `div_frappe_base` and pinning a single dedicated worker keeps the RAM cost paid once per bench and lets every consumer share the same DDL / write / read path.
+
+### 3. Target app
+App: `div_frappe_base`
+Module: `DIV Frappe Base`
+
+### 4. Functional workflow
+
+1. **System (consumer app)** — declares a vector column in a `post_model_sync` patch by calling `upgrade_column_to_vector(doctype, field, dim)`. The helper detects the current column type and ALTERs it to `VECTOR(<dim>) NULL`. Trigger: `bench migrate` of the consumer.
+2. **System (consumer app)** — at ingestion / sync time, calls `embed_texts(texts) → np.ndarray` to vectorise a batch, then `write_embedding(doctype, name, field, vec)` for each row. `write_embedding` formats the vector as `[v1,v2,…]` text and runs `UPDATE … SET field = VEC_FromText(%s)`. Trigger: in-method.
+3. **System (consumer app)** — at query time, calls `search_cosine(doctype, field, query, filters=…, limit=N) → list[dict]`. The helper emits `SELECT name, VEC_DISTANCE_COSINE(field, VEC_FromText(%s)) AS dist FROM tab… WHERE field IS NOT NULL AND … ORDER BY dist ASC LIMIT %s` and returns `[{name, dist, cosine}]` where `cosine = 1 - dist`. Trigger: in-method.
+4. **System (boot)** — `load_model()` lazily imports `sentence_transformers`, sets `HF_HOME` to `<bench>/sites/.huggingface_cache/` so weights live with site data instead of the OS user's home, and caches the loaded model in a module-global. First call pays ~30–60 s for the download / load; subsequent calls in the same process return immediately. Trigger: first `embed_texts` call in a process.
+5. **System (worker)** — RQ workers running on the `embed` queue (one bench-wide) hold the model resident across jobs. Other workers / gunicorn never load it.
+
+### 5. Schema
+
+No new doctypes. Per-consumer columns are added by each consumer's patch.
+
+#### 5.1 Column shape on consumers
+
+Every vector-search column on a consumer is `VECTOR(<dim>) NULL` (e.g. `VECTOR(768) NULL` for the bge-base model). Declared on the consumer doctype JSON as `fieldtype: "Long Text"` + `is_virtual: 1` so:
+- Frappe's schema sync (which doesn't know about the MariaDB `VECTOR` type) skips the column entirely on every `bench migrate`. Without `is_virtual: 1`, schema sync attempts to ALTER the column back to `longtext`, which fails noisily on existing vector data.
+- The Frappe ORM (`doc.insert()` / `doc.save()`) doesn't write the column on insert. Writes happen exclusively via `write_embedding`'s raw SQL UPDATE.
+
+**HNSW vector index** is intentionally **not** created. MariaDB ≥ 11.7 requires `NOT NULL` on every column inside a `VECTOR INDEX`, but the ORM-insert path writes `NULL` for the field on row creation (the embedding is computed asynchronously after). Adding the index would require either backfilling every consumer's insert path with a zero-vector default or moving inserts to raw SQL — both larger refactors than this module wants to carry. Without the index, `search_cosine` falls back to a full-scan `VEC_DISTANCE_COSINE`, which is fast enough at current corpus sizes (≤ ~10 k rows) but should be revisited if a consumer's corpus grows materially or the matcher becomes hot.
+
+### 6. Overrides, hooks, and direct file edits
+
+**`scheduler_events`:** none.
+
+**File-direct edits:**
+
+- `apps/div_frappe_base/div_frappe_base/search/__init__.py` — new package.
+- `apps/div_frappe_base/div_frappe_base/search/vector.py` — new module. Exports:
+  - `embed_texts(texts: list[str]) -> np.ndarray` — runs the bge model on a batch and returns `(N, dim)` float32. Lazy-loads the model once per process; weights download into `HF_HOME` set to `<bench>/sites/.huggingface_cache/`. Output is L2-normalised so `VEC_DISTANCE_COSINE` is equivalent to `1 - dot(a, b)`.
+  - `embed_text(text: str) -> np.ndarray` — single-string wrapper.
+  - `format_vector_text(vec) -> str` — renders `[v1,v2,…]` for `VEC_FromText(...)`. MariaDB 11.8 rejects raw float32 bytes bound through MySQLdb parameter substitution to a `VECTOR(N)` column with "Incorrect vector value"; the text form is the dialect-safe path.
+  - `pack_vector(vec) -> bytes` — packs to little-endian float32 bytes. Retained for callers that want to bypass `write_embedding` (e.g. hex-literal inserts); not used by the helper's own write path.
+  - `write_embedding(doctype, name, field, vec) -> None` — runs `UPDATE …tab{doctype}… SET field = VEC_FromText(%s) WHERE name = %s`. Skips the ORM entirely.
+  - `search_cosine(doctype, field, query, filters=None, limit=10) -> list[dict]` — full-scan cosine ranker; emits `SELECT name, VEC_DISTANCE_COSINE(field, VEC_FromText(%s)) AS dist FROM tab… WHERE field IS NOT NULL AND … ORDER BY dist ASC LIMIT %s`. Returns `[{name, dist, cosine}]`.
+  - `upgrade_column_to_vector(doctype, field, dim, distance="cosine") -> bool` — idempotent ALTER to `VECTOR(<dim>) NULL`. No-op when the column is already native vector. Returns `False` on MariaDB < 11.7 so the consumer can fall through to its non-vector match path. The `vector_index_exists` helper SQL escapes `%VECTOR%` as `%%VECTOR%%` because `frappe.db.sql` runs the query through MySQLdb's printf-style parameter substitution when `args` is present; an unescaped `%V` raises `not enough arguments for format string` before the query reaches the server.
+  - `mariadb_supports_vectors() -> bool` — cached `SELECT VERSION()` parse for `≥ 11.7.0`.
+  - `column_is_vector_ready(doctype, field) -> bool` / `column_is_native_vector(doctype, field) -> bool` — DATA_TYPE-introspection helpers used by `upgrade_column_to_vector` to keep itself idempotent. `column_is_blob` is preserved as a back-compat alias of `column_is_vector_ready` for older patch-version callers.
+
+**New Python dependencies in `div_frappe_base/pyproject.toml`:**
+- `sentence-transformers` (Apache 2.0) — pulls in `transformers` + `torch` (CPU build) + `numpy` transitively. ~1.5 GB on disk in the bench virtualenv; one-time install. Model weights (`BAAI/bge-base-en-v1.5`, ~440 MB) download into `sites/.huggingface_cache/` on first use.
+
+**Embed queue and worker** (new bench-wide infrastructure):
+
+A single new RQ queue, `embed`, served by **one** dedicated worker process. The model is loaded once inside that worker on first use and stays resident; every gunicorn worker, scheduler, and other RQ worker stays lean.
+
+- `apps/div_frappe_base/div_frappe_base/hooks.py` — registers the queue via `worker_queues = ["short", "default", "long", "embed"]`.
+- `apps/div_frappe_base/div_frappe_base/install.py` — `after_install` merges `"workers": {"embed": {"queues": ["embed"], "num_workers": 1, "background_workers": 1}}` into `<bench>/sites/common_site_config.json`. Pinning to one worker is essential: a second process would re-load the ~600 MB model.
+- `Procfile` — regenerated by `bench setup procfile` once `worker_queues` is set; the new `worker_embed: bench worker --queue embed` line shows up automatically.
+
+**Bench prerequisite:** MariaDB ≥ 11.7 (the `VECTOR` type). On older releases, `upgrade_column_to_vector` returns `False` and consumers must fall through to a non-vector match path.
+
+### 7. Permissions
+No new permissions. The module is server-side only and inherits whatever permission the calling code carries on the consumer doctype.
+
+### 8. Out of scope
+
+- **HNSW vector index** on the column. Deferred — see § 5.1 for the `NOT NULL` constraint that blocks it. At current corpus sizes the full-scan cosine is fast enough; revisit when a consumer's corpus grows large enough to matter.
+- **Provider-hosted embedding APIs.** The module is CPU-local-only by design — the existing `div_frappe_base.ai.client` already handles provider-API routing for chat / vision / structured-output, and embeddings would land there if / when a hosted option becomes preferable. Today there's no consumer that wants the cost of a per-row API call.
+- **Per-row backfill on dim change.** Swapping the embedding model means a new patch per consumer that re-sizes the `VECTOR(dim)` column and re-embeds. The helpers all key off `dim`, so the mechanical work is contained, but the re-embed cost is the consumer's to budget.
+- **Cross-consumer rerankers.** Each consumer ranks its own corpus; there's no shared rerank step. Layering a small ranker (e.g. bge-reranker-base) on top of the cosine results is feature-specific and lives in the consumer.
+
+---
+
+## Spreadsheet Importer Dialog
+
+### 1. Summary
+A reusable dialog (`frappe.spreadsheet_importer.show_import_dialog(...)`) that loads an Import Profile, lets the operator pick a sheet / header row / trailing-skip, map columns, and configure per-column value translations, then imports the file's rows into a parent doc's child table via `div_frappe_base.div_frappe_base.doctype.import_profile.import_profile.import_data`. Sits on top of the Import Profile doctype documented in § Import Profile above; the dialog is the operator-facing surface and lives in `public/js/spreadsheet_importer.bundle.js`.
+
+### 2. Problem / why now
+Operators routinely re-import the same BOM / pick-and-place / supplier-price-list shape from many parent docs (PCB Assemblies, Purchase Orders, etc.). Hand-mapping columns and value translations on every import is repetitive and error-prone. The dialog plus Import Profile persistence collapses that to "pick the file, confirm the saved mapping, click Import".
+
+### 3. Target app
+App: `div_frappe_base`
+Module: `DIV Frappe Base`
+
+### 4. Functional workflow
+
+1. **User** clicks an Import button on a parent doctype's form (PCB Assembly's "Import BOM", etc.). The button handler calls `frappe.spreadsheet_importer.show_import_dialog({frm, target_child_table_field, file_url, scope_filters, …})`. Trigger: button click.
+2. **System** runs three async calls in sequence: `get_target_field_meta` (drives the column-mapping dropdowns), `find_profile` (looks up an existing Import Profile by `target_doctype` + `target_child_table_field` + scope), and `get_profile` (loads its column / value mappings). Trigger: dialog open.
+3. **System** sets `header_row_index` and `trailing_rows_to_skip` from the profile on the dialog's Int fields and calls `parse_and_render({ header_row_index })` to fetch the head + tail preview from the server and render the column-mapping grid. The preset values are passed *directly* into `parse_and_render` rather than read back through `dialog.get_value` because Frappe's `dialog.set_value` for an Int routes through `frappe.run_serially`, which defers the actual `$input.val(...)` write to a later microtask — reading via `get_value` on the very next line returns the stale field default and silently makes the preview (and any same-tick Import click) use the wrong header row. Trigger: profile-loaded.
+4. **User** confirms / edits the mapping and clicks Import. Trigger: button click.
+5. **System** calls `import_data` with the current mapping + header/trailing/sheet config; the server walks rows from `header_row_index + 1` to `len(rows) - trailing_rows_to_skip`, applies the per-column `value_map` translations, coerces numeric fields, and appends to the parent doc's child table. Trigger: server call.
+
+### 5. Schema
+No new doctypes. Builds on `Import Profile` / `Import Profile Scope` / `Import Profile Column` documented above.
+
+### 6. Overrides, hooks, and direct file edits
+
+- `apps/div_frappe_base/div_frappe_base/public/js/spreadsheet_importer.bundle.js` — the dialog. Bundled because the column-mapping grid uses a few hundred lines of vanilla JS that's not worth bringing in as a separate plain `.js` include. The `parse_and_render` function accepts an optional `overrides` dict (currently `{header_row_index}`) so callers in the bootstrap chain can pass freshly-set values without round-tripping through `dialog.get_value`.
+
+### 7. Permissions
+Inherits the parent doctype's write permission — the dialog only ever writes to the parent's child table via the parent's own ORM save.
+
+### 8. Out of scope
+- **Multi-sheet imports in one click.** The dialog handles one sheet at a time; if a workbook has two sheets that both need importing, the operator runs the dialog twice.
+- **Streaming row-by-row import for very large files.** The server reads the whole sheet into memory and walks it; not optimised for files larger than a few hundred thousand rows.

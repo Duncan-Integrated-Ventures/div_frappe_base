@@ -159,17 +159,27 @@ frappe.spreadsheet_importer.show_import_dialog = ({
 				})
 			})
 			.then(r => {
+				let initial_header = 1
+				let initial_trailing = 0
 				if (r && r.message) {
 					state.profile = r.message
-					dialog.set_value('header_row_index', state.profile.header_row_index || 1)
-					dialog.set_value('trailing_rows_to_skip', state.profile.trailing_rows_to_skip || 0)
+					initial_header = state.profile.header_row_index || 1
+					initial_trailing = state.profile.trailing_rows_to_skip || 0
+					// dialog.set_value routes through frappe.run_serially, which
+					// defers the underlying $input.val(...) write to a later
+					// microtask. Pass the preset header_row_index directly to
+					// parse_and_render so the very first server call and
+					// preview render use the preset, not the field default.
+					dialog.set_value('header_row_index', initial_header)
+					dialog.set_value('trailing_rows_to_skip', initial_trailing)
 				}
-				parse_and_render()
+				parse_and_render({ header_row_index: initial_header })
 			})
 	}
 
-	function parse_and_render() {
-		let header_row_index = Number(dialog.get_value('header_row_index')) || 1
+	function parse_and_render(overrides = {}) {
+		let header_row_index = overrides.header_row_index ?? Number(dialog.get_value('header_row_index')) ?? 1
+		header_row_index = Number(header_row_index) || 1
 		let sheet_name = dialog.get_value('sheet_name') || (state.profile ? state.profile.sheet_name : null) || null
 
 		frappe
