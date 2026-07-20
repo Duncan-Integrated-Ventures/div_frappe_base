@@ -149,7 +149,7 @@ def convert_to_canonical(
 
 
 def select_display_uom(
-	value: float, base_uom: str, *, integer: bool = False
+	value: float, base_uom: str, *, integer: bool = False, exclude: set[str] | None = None
 ) -> tuple[float, str]:
 	"""Pick the UOM in `base_uom`'s conversion graph that gives the shortest
 	decimal representation of `value`. Returns (converted_value, chosen_uom).
@@ -162,14 +162,24 @@ def select_display_uom(
 	better is reachable.
 
 	`integer=True` adds a tiebreaker preferring UOMs where the value is closer
-	to integer (avoids precision loss when the caller will int-round)."""
+	to integer (avoids precision loss when the caller will int-round).
+
+	`exclude` is a per-call set of UOM names the caller never wants chosen
+	(e.g. a Canonical Attribute's `excluded_display_uoms`). It is unioned with
+	the globally-flagged set (UOM.custom_exclude_from_display) so a blanket
+	"never show Centimeter" rule and per-canonical overrides compose. `base_uom`
+	itself is always kept as the floor fallback even if excluded — there must be
+	a valid display unit."""
 	if not base_uom or value is None:
 		return value, base_uom
+	excluded = global_excluded_display_uoms() | (exclude or set())
 	candidates = reachable_uoms(base_uom)
 	best_uom = base_uom
 	best_value = value
 	best_score = display_score(value, integer=integer)
 	for uom, factor in candidates.items():
+		if uom in excluded:
+			continue
 		candidate = value * factor
 		score = display_score(candidate, integer=integer)
 		if score < best_score:
@@ -177,6 +187,25 @@ def select_display_uom(
 			best_uom = uom
 			best_value = candidate
 	return best_value, best_uom
+
+
+def global_excluded_display_uoms() -> set[str]:
+	"""UOM names flagged `custom_exclude_from_display` — never auto-picked as a
+	display unit anywhere. Cached per request (resets per HTTP request / RQ
+	job). Tolerant of the custom field not existing yet (pre-migrate) so
+	imports don't break mid-deploy."""
+	cache = getattr(frappe.local, "_uom_display_excluded", None)
+	if cache is None:
+		try:
+			cache = set(
+				frappe.get_all(
+					"UOM", filters={"custom_exclude_from_display": 1}, pluck="name"
+				)
+			)
+		except Exception:
+			cache = set()
+		frappe.local._uom_display_excluded = cache
+	return cache
 
 
 def display_score(v: float, *, integer: bool) -> tuple[float, int, float]:

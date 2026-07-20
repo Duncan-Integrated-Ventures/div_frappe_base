@@ -1,0 +1,125 @@
+{
+ "actions": [],
+ "autoname": "field:layout_name",
+ "creation": "2026-07-15 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "layout_name",
+  "enabled",
+  "sample_section",
+  "sample_image",
+  "reference_width",
+  "reference_height",
+  "matching_section",
+  "match_anchors",
+  "min_barcodes",
+  "notes",
+  "regions_section",
+  "field_regions"
+ ],
+ "fields": [
+  {
+   "description": "Unique name for this physical label layout, e.g. `Digi-Reel`, `Mouser Reel`, `Generic Manufacturer`.",
+   "fieldname": "layout_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Layout Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "sample_section",
+   "fieldtype": "Section Break",
+   "label": "Reference Sample"
+  },
+  {
+   "description": "A representative photo of this label, rectified (deskewed, cropped to the label edge). Field regions below are drawn against this image.",
+   "fieldname": "sample_image",
+   "fieldtype": "Attach Image",
+   "label": "Sample Image"
+  },
+  {
+   "description": "Pixel width of the reference sample. Regions are stored as fractions (0–1), so this is informational for the editor.",
+   "fieldname": "reference_width",
+   "fieldtype": "Int",
+   "label": "Reference Width (px)"
+  },
+  {
+   "fieldname": "reference_height",
+   "fieldtype": "Int",
+   "label": "Reference Height (px)"
+  },
+  {
+   "fieldname": "matching_section",
+   "fieldtype": "Section Break",
+   "label": "Matching"
+  },
+  {
+   "description": "Newline-separated text anchors that must appear in the OCR'd label for this layout to match. The layout with the most anchor hits wins; ties break on region count.",
+   "fieldname": "match_anchors",
+   "fieldtype": "Small Text",
+   "label": "Match Anchors"
+  },
+  {
+   "default": "0",
+   "description": "Number of barcodes expected on this label. Used by the browser auto-capture gate as a readiness signal; 0 disables the barcode check.",
+   "fieldname": "min_barcodes",
+   "fieldtype": "Int",
+   "label": "Expected Barcodes",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "regions_section",
+   "fieldtype": "Section Break",
+   "label": "Field Regions"
+  },
+  {
+   "description": "One row per field to extract, with its bounding box (as fractions of the rectified image) and whether it's read as OCR text or a decoded barcode.",
+   "fieldname": "field_regions",
+   "fieldtype": "Table",
+   "label": "Field Regions",
+   "options": "Label Field Region"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-15 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "DIV Frappe Base",
+ "name": "Label Layout Format",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

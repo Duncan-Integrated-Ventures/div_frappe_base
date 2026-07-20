@@ -14,18 +14,51 @@ AI_PROFILE_SEEDS = [
 	{"profile_name": "datasheet", "timeout": 120},
 ]
 
+# Default OCR Engine rows on OCR Settings. `default` targets a local PaddleOCR
+# HTTP service (base_url filled by the operator once the container is up — see
+# README § "OCR service"); `vision-llm` delegates to the `vision` AI Profile so
+# a local Qwen2.5-VL can be A/B'd against PaddleOCR without a code change.
+OCR_ENGINE_SEEDS = [
+	{
+		"engine_name": "default",
+		"engine_type": "PaddleOCR HTTP",
+		"base_url": "",
+		"lang": "en",
+		"min_confidence": 0.5,
+		"timeout": 60,
+	},
+	{
+		"engine_name": "vision-llm",
+		"engine_type": "Vision LLM",
+		"ai_profile": "vision",
+		"lang": "en",
+		"min_confidence": 0.0,
+		"timeout": 60,
+	},
+]
+
 EMBED_WORKER_CONFIG = {
 	"queues": ["embed"],
 	"num_workers": 1,
 	"background_workers": 1,
 }
 
+# 50 MB. Frappe's `frappe.utils.file_manager.get_max_file_size` (the legacy
+# code path that `save_file` actually enforces) defaults to 10 MB, which is
+# below the size of common multi-device datasheets (e.g. Microchip's combined
+# ATMEGA48/88/168/328 PDF is ~11 MB). The modern `frappe.core.api.file`
+# default is 25 MB, but the two paths read the same `max_file_size` key, so a
+# single common_site_config entry lifts both ceilings together.
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
+
 
 def after_install():
 	make_uom_alias_case_sensitive()
 	make_uom_symbol_case_sensitive()
 	seed_ai_profiles()
+	seed_ocr_engines()
 	ensure_embed_worker_config()
+	ensure_max_file_size()
 
 
 def ensure_embed_worker_config():
@@ -57,6 +90,26 @@ def ensure_embed_worker_config():
 	frappe.installer.update_site_config(
 		"workers",
 		workers,
+		validate=False,
+		site_config_path=common_path,
+	)
+
+
+def ensure_max_file_size():
+	common_path = common_site_config_path()
+	if not common_path or not os.path.exists(common_path):
+		return
+
+	with open(common_path) as fh:
+		config = json.load(fh)
+
+	current = config.get("max_file_size")
+	if isinstance(current, int) and current >= MAX_FILE_SIZE_BYTES:
+		return
+
+	frappe.installer.update_site_config(
+		"max_file_size",
+		MAX_FILE_SIZE_BYTES,
 		validate=False,
 		site_config_path=common_path,
 	)
@@ -100,6 +153,24 @@ def seed_ai_profiles():
 				"timeout": seed["timeout"],
 			},
 		)
+		added = True
+	if added:
+		settings.save(ignore_permissions=True)
+
+
+def seed_ocr_engines():
+	"""Ensure the default OCR Engine rows exist on OCR Settings.
+
+	Idempotent — checks for an existing row by engine_name before appending,
+	and never overwrites an operator-configured row. Safe to invoke from
+	`bench execute` to re-seed missing rows on an existing bench."""
+	settings = frappe.get_single("OCR Settings")
+	existing = {row.engine_name for row in settings.engines}
+	added = False
+	for seed in OCR_ENGINE_SEEDS:
+		if seed["engine_name"] in existing:
+			continue
+		settings.append("engines", seed)
 		added = True
 	if added:
 		settings.save(ignore_permissions=True)

@@ -19,6 +19,20 @@ dependencies = [
     # torch + transformers transitively (~1.5 GB on first install). Weights
     # land in sites/.huggingface_cache on first encode().
     "sentence-transformers",
+    # Optional OCR backend for div_frappe_base.ocr.client (OCR Engine type
+    # "Tesseract"). Lazy-imported — only pulled at runtime when a Tesseract
+    # engine is actually used, and additionally requires the `tesseract-ocr`
+    # system binary. The default `PaddleOCR HTTP` and `Vision LLM` engines
+    # need neither. Pillow decodes the image bytes for that backend and for
+    # the label_capture extractor (image size + barcode decode input).
+    "pytesseract",
+    "Pillow",
+    # ZXing C++ port with Python bindings. Decodes 1D (Code 128) and 2D
+    # (Data Matrix, QR) barcodes from a captured label photo in one call
+    # (zxingcpp.read_barcodes). Used by div_frappe_base.label_capture.extractor
+    # to read every barcode on a label and cross-check it against OCR text.
+    # Ships prebuilt wheels — no system dependency.
+    "zxing-cpp",
 ]
 
 [build-system]
@@ -28,6 +42,15 @@ build-backend = "flit_core.buildapi"
 # These dependencies are only installed when developer mode is enabled
 [tool.bench.dev-dependencies]
 # package_name = "~=1.1.0"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
 
 [tool.ruff]
 line-length = 110

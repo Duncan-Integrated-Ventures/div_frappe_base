@@ -22,6 +22,14 @@ CACHE_TTL_KEY_SECONDS = 3600
 CACHE_TTL_MISSING_SECONDS = 300
 CACHE_TTL_MISSING_LOGGED_SECONDS = 3600
 
+# Default retry count for transient provider failures (Timeout, APIConnectionError,
+# RateLimitError). litellm's own retry loop applies exponential backoff between
+# attempts and only retries on classes that are actually idempotent. 2 retries
+# (=3 total attempts) survives the kind of one-off connect blip that produced
+# the original `litellm.Timeout: Connection timed out after None seconds.` log
+# without hammering an upstream provider that's genuinely down.
+DEFAULT_NUM_RETRIES = 2
+
 
 PROVIDER_PREFIX = {
 	"Gemini": "gemini",
@@ -83,6 +91,15 @@ def complete(
 		"api_key": api_key,
 		"temperature": profile.temperature,
 		"timeout": profile.timeout,
+		# litellm.num_retries enables its own retry loop with exponential backoff
+		# on Timeout / APIConnectionError / RateLimitError. Without this, a single
+		# `httpx.TimeoutException` from the upstream provider surfaces as a
+		# litellm.Timeout straight back to the caller (e.g. the datasheet parse
+		# job's "AI Parse Error" log), even though the next call 100ms later
+		# would have succeeded. Hardcoding here keeps every profile retried with
+		# the same policy; a per-profile override can be added later if vision /
+		# categorizer want different curves.
+		"num_retries": DEFAULT_NUM_RETRIES,
 	}
 	if profile.base_url:
 		kwargs["api_base"] = profile.base_url

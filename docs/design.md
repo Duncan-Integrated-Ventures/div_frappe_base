@@ -693,3 +693,136 @@ Inherits the parent doctype's write permission — the dialog only ever writes t
 ### 8. Out of scope
 - **Multi-sheet imports in one click.** The dialog handles one sheet at a time; if a workbook has two sheets that both need importing, the operator runs the dialog twice.
 - **Streaming row-by-row import for very large files.** The server reads the whole sheet into memory and walks it; not optimised for files larger than a few hundred thousand rows.
+
+---
+
+## OCR Settings & Engine-Agnostic Client
+
+### 1. Summary
+A bench-wide `OCR Settings` Single doctype plus a `div_frappe_base.ocr.client` helper — the image analogue of § "AI Settings & Provider-Agnostic Client". `OCR Settings` holds a child table of named **OCR Engine** rows (one per use-case), each carrying its own engine type (PaddleOCR HTTP / Tesseract / Vision LLM / Custom HTTP), base URL, language, min-confidence, optional API key, and timeout. The helper exposes `recognize(engine_name, image_bytes) -> OcrResult` that dispatches to the configured backend and returns a normalized list of text lines with per-line confidence and bounding geometry, so callers can swap PaddleOCR ⇄ Tesseract ⇄ a local vision LLM (Qwen2.5-VL via Ollama) without touching call sites. It returns *raw OCR only* — domain mapping (which line is a part number, a lot, a date code) is the caller's job.
+
+### 2. Problem / why now
+`div_ems` needs to read human-readable supplier labels (Digi-Reels and direct-manufacturer labels) that carry no scannable data matrix — most of them. Barcode scanners can't OCR text, so the input becomes a phone/tablet camera photo. OCR accuracy and cost vary widely by engine (local PaddleOCR vs. Tesseract vs. a hosted or local vision model), and the right engine depends on hardware the operator has on hand and evolves over time. Centralizing engine configuration here (every higher-tier app depends on `div_frappe_base`, and the AI-settings precedent already lives here) lets operators pick and tune the engine in the UI, and lets any future app reuse the plumbing. Keeping the client engine-agnostic means the head-to-head PaddleOCR-vs-Qwen comparison (and any later switch) is a settings edit, not a code change.
+
+### 3. Target app
+App: `div_frappe_base`
+Module: `DIV Frappe Base`
+
+### 4. Functional workflow
+1. **Admin** opens **OCR Settings** (Single, System Manager) and reviews the seeded `default` (PaddleOCR HTTP) and `vision-llm` (delegates to the `vision` AI Profile) engine rows. Fills the PaddleOCR service `base_url`, tunes `min_confidence` / `timeout`, and optionally points `vision-llm` at a different AI Profile. Trigger: form save.
+2. **System (any caller)** — `from div_frappe_base.ocr.client import recognize` and calls `recognize("default", image_bytes, mime_type="image/jpeg")`. Trigger: in-method.
+3. **System** — `recognize()` loads the named engine row from the cached `OCR Settings` Single and dispatches on `engine_type`:
+   - `PaddleOCR HTTP` / `Custom HTTP` — POST the image (multipart `file` + `lang`) to `base_url`; parse the JSON response tolerantly (our `{"lines":[...]}` contract or the common PaddleOCR serving shapes) into `OcrLine`s. Optional `api_key` rides on `Authorization: Bearer` + `X-API-Key`. One retry on connection blips.
+   - `Tesseract` — lazy-import `pytesseract`, group `image_to_data` words into lines by (block, par, line), average word confidences. Needs the `tesseract-ocr` system binary.
+   - `Vision LLM` — delegate to `ai.client.complete_json(ai_profile, prompt, attachments=[image])`, asking the model for the text lines as a JSON array. Reuses the AI Settings key/provider plumbing.
+   Trigger: in-method.
+4. **System** — lines below the engine's `min_confidence` are dropped; `recognize()` returns an `OcrResult` (`.lines`, `.full_text`, `.to_dict()`). Backend failures are logged via `frappe.log_error` and either raise or return `None` per `raise_exception`. Trigger: in-method.
+5. **System (after_install)** — `div_frappe_base.install.after_install` → `seed_ocr_engines()` ensures the `default` and `vision-llm` rows exist. Idempotent — never overwrites an operator-configured row. Trigger: install / migrate.
+
+### 5. Schema
+
+#### 5.1 `OCR Settings` — New (Single)
+| Field name | Fieldtype | Options | Notes |
+|---|---|---|---|
+| `engines_section` | Section Break | — | Label "OCR Engines". |
+| `engines` | Table | OCR Engine | Configured engine rows. Seeded with `default`, `vision-llm`. |
+
+`issingle = 1`. Everything per-engine lives on the child so adding an engine is a row insert.
+
+#### 5.2 `OCR Engine` — New (child table)
+Parent: `OCR Settings` via `engines`.
+
+| Field name | Fieldtype | Options | Notes |
+|---|---|---|---|
+| `engine_name` | Data | — | Unique, reqd, `in_list_view`. Caller key passed to `recognize()`. |
+| `engine_type` | Select | `PaddleOCR HTTP\nTesseract\nVision LLM\nCustom HTTP` | reqd, `in_list_view`. Chooses the backend. |
+| `base_url` | Data | — | HTTP engines. `depends_on` PaddleOCR/Custom. |
+| `ai_profile` | Data | — | `Vision LLM` only — the AI Profile name to delegate to. |
+| `lang` | Data | — | Default `en`. Language hint. |
+| `min_confidence` | Float | — | Default `0.5`. Drop lines below this (0–1). |
+| `api_key` | Password | — | Optional HTTP auth. Cache-fronted like the AI client, keyed `ocr_engine:{name}:api_key`, but missing = no auth (not an error). |
+| `timeout` | Int | — | Default `60`. Per-call wall-clock cap. |
+
+### 6. Overrides, hooks, and direct file edits
+- `apps/div_frappe_base/div_frappe_base/ocr/__init__.py` — package marker.
+- `apps/div_frappe_base/div_frappe_base/ocr/client.py` — `recognize(...)`, `OcrResult` / `OcrLine` dataclasses, per-backend handlers, tolerant PaddleOCR response parser, cache-fronted `resolve_api_key`, and `EngineNotConfigured`.
+- `apps/div_frappe_base/.../doctype/ocr_settings/ocr_settings.py` — `class OCRSettings(Document): pass`.
+- `apps/div_frappe_base/.../doctype/ocr_engine/ocr_engine.py` — `class OCREngine(Document): pass`.
+- `apps/div_frappe_base/div_frappe_base/install.py` — `after_install` calls `seed_ocr_engines()`; `OCR_ENGINE_SEEDS` constant added.
+- `apps/div_frappe_base/pyproject.toml` — adds `pytesseract` + `Pillow` (lazy-used only by the Tesseract backend; also needs the `tesseract-ocr` system binary). The `PaddleOCR HTTP` backend uses the bundled `requests`; `Vision LLM` reuses `litellm` already declared for the AI client.
+
+### 7. Permissions
+| Role | Read | Write | Create | Delete |
+|---|---|---|---|---|
+| System Manager | ✓ | ✓ | ✓ | ✓ |
+
+`OCR Engine` inherits from `OCR Settings`. `recognize()` is a service-layer helper (not whitelisted) and reads the cached key without a permission check, exactly like `ai.client.complete()`.
+
+### 8. Out of scope
+- **Field/layout mapping.** `recognize()` returns raw lines only; deciding which line is which field is the layer above (`label_capture`, next section).
+- **Bundling a PaddleOCR container.** The service is deployed separately (see the README § "OCR service" for the Docker outline); this app only holds the client + the `base_url` pointer.
+- **Image pre-processing.** Deskew / crop / rectification is the caller's responsibility; `recognize()` passes bytes straight through.
+
+---
+
+## Label Photo Capture & Layout Extraction
+
+### 1. Summary
+A reusable, configurable "photograph a label → get structured fields" subsystem built on the OCR client — the same shape as § "Import Profile" (a generic ingestion primitive in base that domain apps consume). A **`Label Layout Format`** doctype ("reverse print format") holds a reference sample image and a child table of **`Label Field Region`** rows — each a named field with a fractional bounding box and a source (OCR text or decoded barcode). `div_frappe_base.label_capture.extractor.extract_label_fields(image)` decodes barcodes (zxing-cpp) + OCRs the image + matches a layout + reads each region + cross-verifies, returning `{field_key: {value, confidence, source}}` for whatever keys the layout defines. A whitelisted `label_capture.api.extract_label` and a reusable JS helper `div_frappe_base.label_capture.open_camera(opts)` (live-preview quality gate + auto-capture) complete the surface. The subsystem is domain-agnostic: field keys are free-form and the caller maps them.
+
+### 2. Problem / why now
+`div_ems` needs to read no-data-matrix supplier labels via camera (see its § "Label Photo Capture & OCR Extraction"), but nothing about "capture a photo, match it to a template, extract labeled regions" is EMS-specific — it's the visual analogue of Import Profile's spreadsheet ingestion. Putting the doctypes, the extractor, the camera helper, and the barcode dependency in base keeps EMS thin (just its part-number vocabulary + Supplier Scan Format parsing) and lets any future app reuse the capability by defining a layout and calling `open_camera`.
+
+### 3. Target app
+App: `div_frappe_base`
+Module: `DIV Frappe Base`
+
+### 4. Functional workflow
+1. **Admin** creates a `Label Layout Format`: uploads a rectified sample image, adds `Label Field Region` rows (field key, box fractions, Text/Barcode source, optional symbology + extract-regex), and sets `match_anchors` (text that identifies this label). Trigger: form save (`validate` rejects out-of-bounds boxes / bad regexes).
+2. **System (caller)** — a domain flow calls `div_frappe_base.label_capture.open_camera({extract_endpoint, extra_args, on_extract})` from the browser, or `extract_label_fields(image_bytes, ...)` server-side. Trigger: in-method.
+3. **System (`open_camera`)** — live-preview popup runs a per-frame browser quality analysis (focus = Laplacian variance, exposure + glare = luma histogram, steadiness = frame diff, barcode-visible via native `BarcodeDetector` where present); auto-captures on a good streak; falls back to a `capture=environment` file input. POSTs the still to `extract_endpoint` (default `label_capture.api.extract_label`) and hands the result to `on_extract`. Trigger: capture.
+4. **System (`extract_label_fields`)** — decode barcodes (zxing-cpp), OCR via `ocr.client.recognize`, resolve a layout (explicit name → best `match_anchors` hit), read each region (Text → OCR lines inside the box; Barcode → decoded barcodes inside the box, applying the region regex), and cross-verify a key captured both ways (barcode wins, mismatch → `warnings`). Returns raw `ocr_text` / `ocr_lines` / `barcodes` too, so a caller can apply its own heuristics when no layout matches. Trigger: in-method.
+
+### 5. Schema
+
+#### 5.1 `Label Layout Format` — New
+`autoname = field:layout_name`.
+
+| Field name | Fieldtype | Options | Notes |
+|---|---|---|---|
+| `layout_name` | Data | — | Unique, reqd. e.g. `Digi-Reel`. |
+| `enabled` | Check | — | Default 1. |
+| `sample_image` | Attach Image | — | Rectified reference; regions drawn against it. |
+| `reference_width` / `reference_height` | Int | — | Reference pixel dims (regions are fractions; informational). |
+| `match_anchors` | Small Text | — | Newline-separated anchors for auto-match; most hits wins, ties break on region count. |
+| `min_barcodes` | Int | — | Expected barcode count; a readiness signal for the auto-capture gate. |
+| `notes` | Small Text | — | |
+| `field_regions` | Table | Label Field Region | The regions to extract. |
+
+No `supplier` / `scan_format` links — those would pull erpnext/EMS deps into base; domain-preference layout selection and barcode-string parsing are the caller's job.
+
+#### 5.2 `Label Field Region` — New (child table)
+Parent: `Label Layout Format` via `field_regions`.
+
+| Field name | Fieldtype | Options | Notes |
+|---|---|---|---|
+| `field_key` | Data | — | reqd. Free-form; the consuming app decides its keys. |
+| `source` | Select | `Text\nBarcode` | reqd. |
+| `x` / `y` / `w` / `h` | Float | — | Box as fractions (0–1) of the reference image. |
+| `barcode_format` | Data | — | Barcode source only — optional symbology filter. |
+| `regex` | Data | — | Optional; group 1 (or whole match) trims label chrome. |
+
+### 6. Overrides, hooks, and direct file edits
+- `apps/div_frappe_base/div_frappe_base/label_capture/extractor.py` — `extract_label_fields(...)`, `LabelExtraction` / `FieldValue`, barcode decode, OCR, layout match, region extraction, cross-verify. No domain knowledge.
+- `apps/div_frappe_base/div_frappe_base/label_capture/api.py` — whitelisted `extract_label(image, mime_type, engine, layout)` + shared `decode_image_arg`.
+- `apps/div_frappe_base/.../doctype/label_layout_format/` + `.../doctype/label_field_region/` — the two doctypes.
+- `apps/div_frappe_base/div_frappe_base/public/js/label_capture.js` — `div_frappe_base.label_capture.open_camera(opts)`; registered in `hooks.app_include_js`.
+- `apps/div_frappe_base/pyproject.toml` — adds `zxing-cpp` (prebuilt wheels) + `Pillow` (already added for OCR).
+
+### 7. Permissions
+`Label Layout Format` / `Label Field Region`: System Manager (full). The extractor reads layouts via `get_cached_doc` server-side (no per-user check), so consumer flows need no extra layout-read grants.
+
+### 8. Out of scope
+- **Pre-snap format recognition.** Auto-capture uses a generic go/no-go gate; the specific layout is matched server-side on the captured still.
+- **The in-browser layout editor.** The schema + matcher + camera helper are here; the canvas UI to draw region boxes on the sample image is pending (built against real sample labels).
+- **Rectification.** `open_camera` sends the raw frame; deskew/edge-crop is not yet applied client- or server-side.

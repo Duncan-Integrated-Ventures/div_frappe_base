@@ -162,6 +162,20 @@ def column_is_native_vector(doctype: str, field: str) -> bool:
 	return (row[0][0] or "").lower() == "vector"
 
 
+def column_exists(doctype: str, field: str) -> bool:
+	row = frappe.db.sql(
+		"""
+		SELECT 1
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE()
+			AND TABLE_NAME = %s
+			AND COLUMN_NAME = %s
+		""",
+		(f"tab{doctype}", field),
+	)
+	return bool(row)
+
+
 # Back-compat alias: existing callers (and tests) imported `column_is_blob`
 # from this module; keep the old name pointing at the new function.
 column_is_blob = column_is_vector_ready
@@ -219,14 +233,27 @@ def upgrade_column_to_vector(
 	if column_is_native_vector(doctype, field):
 		return True
 
-	# An earlier patch revision may have already converted the column to
-	# BLOB. Either way, MODIFY straight to VECTOR(dim) is safe: VECTOR
-	# accepts the existing payload bytes back via VEC_FromText writes, and
-	# there's no in-flight float32 data on `dim`-mismatched rows on this
-	# bench (sync hasn't successfully populated the column yet).
-	frappe.db.sql(
-		f"ALTER TABLE `tab{doctype}` MODIFY COLUMN `{field}` VECTOR({int(dim)}) NULL"
-	)
+	# `sql_ddl` commits any pending transaction writes before issuing the
+	# ALTER. Frappe's `check_implicit_commit` refuses raw `db.sql` DDL when
+	# earlier writes are buffered in the same transaction (e.g. seed helpers
+	# in `after_migrate` that ran before this call).
+	if not column_exists(doctype, field):
+		# Embedding fields are declared `is_virtual: 1` in the doctype JSON
+		# so Frappe's schema sync (`frappe/database/schema.py`) skips them on
+		# table creation. On fresh sites the column doesn't exist yet — ADD
+		# rather than MODIFY.
+		frappe.db.sql_ddl(
+			f"ALTER TABLE `tab{doctype}` ADD COLUMN `{field}` VECTOR({int(dim)}) NULL"
+		)
+	else:
+		# An earlier patch revision may have already converted the column to
+		# BLOB. Either way, MODIFY straight to VECTOR(dim) is safe: VECTOR
+		# accepts the existing payload bytes back via VEC_FromText writes, and
+		# there's no in-flight float32 data on `dim`-mismatched rows on this
+		# bench (sync hasn't successfully populated the column yet).
+		frappe.db.sql_ddl(
+			f"ALTER TABLE `tab{doctype}` MODIFY COLUMN `{field}` VECTOR({int(dim)}) NULL"
+		)
 	return True
 
 

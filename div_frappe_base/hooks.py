@@ -37,6 +37,9 @@ app_include_js = [
 	"/assets/div_frappe_base/js/uom_family.js",
 	"/assets/div_frappe_base/js/pricing_rule_patches.js",
 	"/assets/div_frappe_base/js/geolocation_patches.js",
+	# label_capture.js exposes div_frappe_base.label_capture.open_camera — the
+	# reusable photo-capture + OCR helper (see docs/design.md § OCR / label capture).
+	"/assets/div_frappe_base/js/label_capture.js",
 ]
 
 # include js, css files in header of web template

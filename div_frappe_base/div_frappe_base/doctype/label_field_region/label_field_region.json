@@ -1,0 +1,98 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-07-15 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "field_key",
+  "source",
+  "x",
+  "y",
+  "w",
+  "h",
+  "barcode_format",
+  "regex"
+ ],
+ "fields": [
+  {
+   "description": "Name of the field this region yields, e.g. `MPN`, `Lot`, `Qty`. Free-form — the consuming app decides which keys it expects.",
+   "fieldname": "field_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Field Key",
+   "reqd": 1
+  },
+  {
+   "default": "Text",
+   "description": "`Text` reads the region with the OCR engine; `Barcode` decodes any barcode inside the region with zxing-cpp.",
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Source",
+   "options": "Text\nBarcode",
+   "reqd": 1
+  },
+  {
+   "description": "Left edge as a fraction (0–1) of the reference image width.",
+   "fieldname": "x",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "X",
+   "precision": "4"
+  },
+  {
+   "description": "Top edge as a fraction (0–1) of the reference image height.",
+   "fieldname": "y",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Y",
+   "precision": "4"
+  },
+  {
+   "description": "Width as a fraction (0–1) of the reference image width.",
+   "fieldname": "w",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "W",
+   "precision": "4"
+  },
+  {
+   "description": "Height as a fraction (0–1) of the reference image height.",
+   "fieldname": "h",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "H",
+   "precision": "4"
+  },
+  {
+   "depends_on": "eval:doc.source=='Barcode'",
+   "description": "Optional. Restrict the decode to a barcode symbology, e.g. `Code128`, `DataMatrix`, `QRCode`. Blank accepts any.",
+   "fieldname": "barcode_format",
+   "fieldtype": "Data",
+   "label": "Barcode Format"
+  },
+  {
+   "description": "Optional. Applied to the recognized value; if it has a capture group, group 1 is used, else the whole match. Lets a region trim label chrome (e.g. strip a `P/N:` prefix).",
+   "fieldname": "regex",
+   "fieldtype": "Data",
+   "label": "Extract Regex"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-15 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "DIV Frappe Base",
+ "name": "Label Field Region",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

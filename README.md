@@ -118,6 +118,52 @@ Reusable spreadsheet ingestion configuration. An **`Import Profile`** doctype na
 
 The matching front end ships as `public/js/spreadsheet_importer.bundle.js` — a Vue-style importer dialog that consumes the profile, parses `.xlsx` / `.xls` (auto-picks the data sheet when the active sheet is a metadata cover) or `.csv` rows, applies the mappings, and inserts child rows into the target document.
 
+#### OCR (`div_frappe_base.ocr`) & the OCR service
+
+Engine-agnostic OCR client, the image analogue of the AI client. `OCR Settings` (Single) holds a child table of named **OCR Engine** rows; `div_frappe_base.ocr.client.recognize(engine_name, image_bytes)` dispatches to the configured backend and returns a normalized `OcrResult` (text lines + per-line confidence + geometry). Backends: `PaddleOCR HTTP` / `Custom HTTP` (POST to a service `base_url`), `Tesseract` (in-process `pytesseract`), `Vision LLM` (delegates to an `AI Profile`, e.g. a local Qwen2.5-VL via Ollama). Seeded engines: `default` (PaddleOCR HTTP) and `vision-llm`. Callers get raw lines only — field mapping is the caller's concern (see `div_ems.scan.ocr_label`). Full design: `docs/design.md` § "OCR Settings & Engine-Agnostic Client".
+
+**Deploying the PaddleOCR service (GPU, Docker).** The `default` engine expects an HTTP OCR service; we don't bundle one — run a maintained image on the GPU host and point `OCR Settings → default → base_url` at it. On a single-box bench the service is reachable at `localhost`.
+
+Prereqs: NVIDIA driver + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) so the container can see the GPU. An RTX 3070 (8 GB) comfortably runs one PP-OCRv5 instance (~6 GB VRAM).
+
+Candidate images (pick one; all expose a REST endpoint):
+
+| Image | Notes |
+|---|---|
+| [`lukyanov/paddleocr-fastapi-docker`](https://github.com/lukyanov/paddleocr-fastapi-docker) | PP-OCRv5, CPU/GPU FastAPI. |
+| [`jarvis1tube/paddleocr-server`](https://hub.docker.com/r/jarvis1tube/paddleocr-server) | PaddleOCR v3+, GPU + CPU variants. |
+| [`m986883511/PaddleOCR-API`](https://github.com/m986883511/PaddleOCR-API) | Ships a `docker-compose.yml`. |
+
+Example (adapt image name / ports to the one you choose):
+
+```bash
+docker run -d --name paddleocr --restart unless-stopped \
+  --gpus all -p 8868:8868 \
+  <paddleocr-image>
+# then set OCR Settings → default → base_url = http://localhost:8868
+```
+
+Expected request/response contract for `PaddleOCR HTTP`: the client POSTs `multipart/form-data` with the image under the **`file`** field and a `lang` field. The response parser accepts our canonical shape `{"lines": [{"text", "confidence", "box"}]}` **and** the common PaddleOCR serving shapes (`{"results": [[{"text","confidence","text_region"}]]}` hubserving, `{"data": [...]}` / `{"result": [...]}` PaddleOCR-API/PP-Structure). If the chosen image returns something else, put a thin adapter in front of it or set the engine to `Custom HTTP` and normalize there. Confidence may be 0–1 or 0–100 (auto-detected). Optional per-engine `api_key` is sent as both `Authorization: Bearer` and `X-API-Key`.
+
+**Local vision-model alternative.** To A/B a vision LLM instead, run [Ollama](https://ollama.com/) with `ollama pull qwen2.5vl:3b`, add an `AI Profile` (`provider=Ollama`, `model=qwen2.5vl:3b`, `base_url=http://localhost:11434`), and the seeded `vision-llm` OCR engine (which delegates to the `vision` AI Profile) will use it — no code change.
+
+### Background workers (dev Procfile)
+
+`install.after_install` writes an `embed` entry into `sites/common_site_config.json` under `workers` (see `install.ensure_embed_worker_config`). In production, `bench setup supervisor` (or systemd) expands that entry into a dedicated worker process — the sentence-transformer model (~600 MB resident) stays loaded in one worker bench-wide, and `frappe.utils.background_jobs.validate_queue` accepts `queue="embed"`.
+
+In dev (Procfile / honcho) there is no equivalent auto-expansion. The default `worker_N` lines must be narrowed so they don't compete on the `embed` queue (which would defeat the model-load amortisation), and a dedicated line must be added for `embed`:
+
+```
+worker_1: bench worker --queue short,default,long 1>> logs/worker.log 2>> logs/worker.error.log
+worker_2: bench worker --queue short,default,long 1>> logs/worker.log 2>> logs/worker.error.log
+worker_3: bench worker --queue short,default,long 1>> logs/worker.log 2>> logs/worker.error.log
+worker_4: bench worker --queue short,default,long 1>> logs/worker.log 2>> logs/worker.error.log
+
+worker_embed: bench worker --queue embed 1>> logs/worker.log 2>> logs/worker.error.log
+```
+
+A bare `bench worker` (no `--queue`) consumes every queue listed in `get_queues_timeout()`, so without the narrowing the four default workers all race on `embed` jobs and each pays the 30-60 s bge cold-load.
+
 ### Installation
 
 You can install this app using the [bench](https://github.com/frappe/bench) CLI:
